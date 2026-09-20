@@ -13,6 +13,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
       - name: Deploy over SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
