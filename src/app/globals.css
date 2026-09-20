@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+/* 针对 1920x1080 分辨率及以上的大屏自动放大根字号 */
+@media (min-width: 1900px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+

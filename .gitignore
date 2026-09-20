@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env
+.env.*
+!.env.example
+collector/agent.env
+collector/profiles/
+*.log
+*.tar.gz
+tsconfig.tsbuildinfo
