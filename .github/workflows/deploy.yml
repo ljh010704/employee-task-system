@@ -3,6 +3,7 @@ name: Deploy taskhub
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: taskhub-production
