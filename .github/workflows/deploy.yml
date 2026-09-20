@@ -20,9 +20,11 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: ssh-keyscan -H "$DEPLOY_HOST" >> "$HOME/.ssh/known_hosts"
-      - name: Pull and recreate container
+      - name: Upload source and recreate container
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && git pull --ff-only origin main && docker compose build --no-cache taskhub-app && docker compose up -d --force-recreate taskhub-app"
+        run: |
+          git archive --format=tar HEAD | ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH' && tar -xf - -C '$DEPLOY_PATH'"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && docker compose build --no-cache taskhub-app && docker compose up -d --force-recreate taskhub-app"
