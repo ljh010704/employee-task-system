@@ -73,7 +73,10 @@ async function runCommand(command) {
     if (command.command_type === 'login' || command.command_type === 'reauth') {
       await opened.adapter.openHome();
       console.log(`[${store.store_code}] browser opened; complete login manually.`);
-      await new Promise((resolve) => setTimeout(resolve, Number(process.env.COLLECTOR_LOGIN_WAIT_MS || 300000)));
+      const deadline = Date.now() + Number(process.env.COLLECTOR_LOGIN_WAIT_MS || 300000);
+      while (Date.now() < deadline && !opened.page.url().includes('/ffa/mshop/homepage')) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
       await opened.adapter.assertLoggedIn();
       await finish(command.id, 'success', { store_code: store.store_code, action: command.command_type });
     } else if (command.command_type === 'collect') {
