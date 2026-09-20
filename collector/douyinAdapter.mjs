@@ -15,6 +15,8 @@ export class DouyinAdapter {
   }
 
   async assertLoggedIn() {
+    // Verified from the test store: the authenticated home page is this route.
+    if (this.page.url().includes('/ffa/mshop/homepage')) return;
     if (!process.env.DOUTIAN_LOGIN_CHECK_SELECTOR) throw new Error('DOUTIAN_LOGIN_CHECK_SELECTOR is not configured for a verified test-store page');
     const visible = await this.page.locator(process.env.DOUTIAN_LOGIN_CHECK_SELECTOR).isVisible().catch(() => false);
     if (!visible) throw new ReauthRequiredError();
