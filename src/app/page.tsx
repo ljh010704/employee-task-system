@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { DailyCompletion, Profile, Task, TaskLog, TaskPriority, TaskStatus } from '@/types';
+import { DailyCompletion, Profile, Store, StoreCategory, StoreScopeType, Task, TaskLog, TaskPriority, TaskStatus } from '@/types';
 
 const STATUS_CONFIG: Record<TaskStatus, { label: string; dot: string; badge: string; border: string }> = {
   todo: { label: '待处理', dot: 'bg-slate-400', badge: 'bg-slate-100 text-slate-700', border: 'border-l-slate-400' },
@@ -88,6 +88,7 @@ export default function DashboardPage() {
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Profile[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -98,6 +99,8 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'daily' | 'once'>('all');
+  const [storeFilter, setStoreFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | StoreCategory>('all');
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const triggerToast = (message: string, type: 'success' | 'error' | 'info' | 'task' = 'success', title?: string, taskId?: string) => {
@@ -124,6 +127,10 @@ export default function DashboardPage() {
   const [newAssignee, setNewAssignee] = useState('');
   const [newDueDate, setNewDueDate] = useState('');
   const [newIsDaily, setNewIsDaily] = useState(false);
+  const [newStoreScope, setNewStoreScope] = useState<StoreScopeType>('none');
+  const [newStoreCategory, setNewStoreCategory] = useState<'all' | StoreCategory>('all');
+  const [newStoreIds, setNewStoreIds] = useState<string[]>([]);
+  const [storeSearch, setStoreSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [transitioningTaskId, setTransitioningTaskId] = useState<string | null>(null);
 
@@ -153,9 +160,18 @@ export default function DashboardPage() {
       if (profileListError) throw profileListError;
       setEmployees(profileList || []);
 
+      const { data: storeList, error: storeError } = await supabase
+        .from('stores')
+        .select('*')
+        .eq('enabled', true)
+        .order('category')
+        .order('store_name');
+      if (storeError) throw storeError;
+      setStores((storeList || []) as Store[]);
+
       const { data: taskList, error: taskError } = await supabase
         .from('tasks')
-        .select('*')
+        .select('*, task_stores(*)')
         .order('created_at', { ascending: false });
       if (taskError) throw taskError;
 
@@ -309,15 +325,33 @@ export default function DashboardPage() {
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || currentUser.role !== 'admin' || !newTitle.trim() || submitting) return;
+    const selectedStoreIds = newStoreScope === 'category'
+      ? stores.filter((store) => store.category === newStoreCategory && store.enabled).map((store) => store.id)
+      : newStoreIds;
+    if (newStoreScope === 'single' && selectedStoreIds.length !== 1) {
+      triggerToast('单店任务必须选择一家店铺', 'error');
+      return;
+    }
+    if (newStoreScope === 'multiple' && selectedStoreIds.length === 0) {
+      triggerToast('多店任务至少选择一家店铺', 'error');
+      return;
+    }
+    if (newStoreScope === 'category' && newStoreCategory === 'all') {
+      triggerToast('请选择任务品类', 'error');
+      return;
+    }
     setSubmitting(true);
     try {
-      const { error } = await supabase.rpc('create_task_with_log', {
+      const { error } = await supabase.rpc('create_task_with_stores', {
         p_title: newTitle.trim(),
         p_description: newDesc.trim() || null,
         p_priority: newPriority,
         p_assignee_id: newAssignee || null,
         p_due_date: newDueDate || null,
         p_is_daily: newIsDaily,
+        p_store_scope_type: newStoreScope,
+        p_store_category: newStoreCategory === 'all' ? null : newStoreCategory,
+        p_store_ids: selectedStoreIds,
       });
       if (error) throw error;
       triggerToast('任务发布成功！', 'success');
@@ -328,6 +362,10 @@ export default function DashboardPage() {
       setNewAssignee('');
       setNewPriority('medium');
       setNewIsDaily(false);
+      setNewStoreScope('none');
+      setNewStoreCategory('all');
+      setNewStoreIds([]);
+      setStoreSearch('');
       await loadData(true);
     } catch (error) {
       triggerToast(`创建任务失败：${error instanceof Error ? error.message : '请稍后重试'}`, 'error');
@@ -355,6 +393,8 @@ export default function DashboardPage() {
     return match ? match.full_name : '员工';
   };
 
+  const getTaskStores = (task: Task) => task.task_stores || [];
+
   const getDisplayStatus = (task: Task): TaskStatus => task.is_daily ? (task.daily_status_today || 'todo') : task.status;
 
   const filteredTasks = useMemo(() => {
@@ -368,17 +408,22 @@ export default function DashboardPage() {
       if (typeFilter === 'daily' && !t.is_daily) return false;
       if (typeFilter === 'once' && t.is_daily) return false;
 
+      const taskStores = getTaskStores(t);
+      if (storeFilter !== 'all' && !taskStores.some((store) => store.store_id === storeFilter)) return false;
+      if (categoryFilter !== 'all' && !taskStores.some((store) => store.category_snapshot === categoryFilter)) return false;
+
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const titleMatch = t.title.toLowerCase().includes(query);
         const descMatch = t.description?.toLowerCase().includes(query);
         const nameMatch = getEmpName(t.assignee_id).toLowerCase().includes(query);
-        if (!titleMatch && !descMatch && !nameMatch) return false;
+        const storeMatch = taskStores.some((store) => `${store.store_name_snapshot} ${store.store_code_snapshot} ${store.category_snapshot}`.toLowerCase().includes(query));
+        if (!titleMatch && !descMatch && !nameMatch && !storeMatch) return false;
       }
 
       return true;
     });
-  }, [tasks, navTab, priorityFilter, typeFilter, searchQuery, currentUser]);
+  }, [tasks, navTab, priorityFilter, typeFilter, searchQuery, currentUser, storeFilter, categoryFilter]);
 
   return (
     <div className="min-h-screen bg-[#fbfbfa] text-stone-800 flex flex-col lg:flex-row antialiased selection:bg-stone-200 text-sm relative">
@@ -643,6 +688,26 @@ export default function DashboardPage() {
               <option value="low">⚪ 低</option>
             </select>
 
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value as 'all' | StoreCategory)}
+              className="bg-stone-100/80 hover:bg-stone-100 border border-stone-200/80 text-stone-700 text-xs sm:text-sm rounded-xl px-2.5 py-1.5 sm:py-2 focus:outline-none"
+            >
+              <option value="all">全部品类</option>
+              <option value="服装">服装</option>
+              <option value="手机壳">手机壳</option>
+              <option value="食品">食品</option>
+            </select>
+
+            <select
+              value={storeFilter}
+              onChange={(e) => setStoreFilter(e.target.value)}
+              className="bg-stone-100/80 hover:bg-stone-100 border border-stone-200/80 text-stone-700 text-xs sm:text-sm rounded-xl px-2.5 py-1.5 sm:py-2 focus:outline-none max-w-40"
+            >
+              <option value="all">全部店铺</option>
+              {stores.map((store) => <option key={store.id} value={store.id}>{store.store_name}</option>)}
+            </select>
+
             <div className="flex items-center bg-stone-100 p-1 rounded-xl border border-stone-200/60 text-xs sm:text-sm shrink-0">
               <button
                 onClick={() => setViewMode('kanban')}
@@ -750,6 +815,16 @@ export default function DashboardPage() {
                               </p>
                             )}
 
+                            {task.task_stores && task.task_stores.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1 mb-3 text-[11px] text-stone-500">
+                                <span className="px-1.5 py-0.5 rounded bg-orange-50 text-orange-700 border border-orange-200">
+                                  {task.task_stores[0].category_snapshot}
+                                </span>
+                                <span>{task.task_stores.length} 家店</span>
+                                <span className="truncate max-w-[180px]">{task.task_stores.slice(0, 2).map((store) => store.store_name_snapshot).join('、')}{task.task_stores.length > 2 ? '…' : ''}</span>
+                              </div>
+                            )}
+
                             <div className="pt-2.5 border-t border-stone-100 flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <div className={`w-6 h-6 rounded-full ${avatar.bg} text-white flex items-center justify-center text-xs font-bold shadow-xs`}>
@@ -813,6 +888,9 @@ export default function DashboardPage() {
                             </span>
                           ) : (
                             <span className="text-xs text-stone-400">单次</span>
+                          )}
+                          {task.task_stores && task.task_stores.length > 0 && (
+                            <div className="text-[11px] text-stone-500 mt-1">{task.task_stores.length} 家店 · {task.task_stores[0].category_snapshot}</div>
                           )}
                         </td>
                         <td className="px-5 py-4">
@@ -922,6 +1000,21 @@ export default function DashboardPage() {
                   <span className="text-stone-800 font-medium">
                     {selectedTask.is_daily ? '🔄 每日重复打卡例行任务' : '单次完成任务'}
                   </span>
+                </div>
+
+                <div className="flex items-start">
+                  <span className="w-24 sm:w-28 text-stone-400 font-medium shrink-0">店铺范围</span>
+                  <div className="text-stone-800 font-medium">
+                    {selectedTask.task_stores && selectedTask.task_stores.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedTask.task_stores.map((store) => (
+                          <span key={`${selectedTask.id}-${store.store_code_snapshot}`} className="px-2 py-0.5 rounded bg-orange-50 text-orange-800 border border-orange-200 text-xs">
+                            {store.store_name_snapshot}（{store.category_snapshot}）
+                          </span>
+                        ))}
+                      </div>
+                    ) : <span className="text-stone-400 font-normal">未绑定具体店铺</span>}
+                  </div>
                 </div>
 
                 <div className="flex items-center">
@@ -1143,6 +1236,72 @@ export default function DashboardPage() {
                 <p className="text-[11px] text-stone-400 mt-2">
                   {newIsDaily ? '该任务为员工每日日常必做项，卡片将带有醒目的【每日打卡】标识。' : '普通单次任务，主管验收通过后即归档结束。'}
                 </p>
+              </div>
+
+              <div className="p-3.5 bg-orange-50/50 rounded-xl border border-orange-200">
+                <label className="block text-xs font-semibold text-stone-700 uppercase tracking-wider mb-2">任务店铺范围</label>
+                <select
+                  value={newStoreScope}
+                  onChange={(e) => {
+                    const scope = e.target.value as StoreScopeType;
+                    setNewStoreScope(scope);
+                    if (scope === 'none') setNewStoreIds([]);
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-stone-300 rounded-xl bg-white"
+                >
+                  <option value="none">不绑定店铺</option>
+                  <option value="single">单店任务</option>
+                  <option value="multiple">多店任务</option>
+                  <option value="category">按品类全部启用店铺</option>
+                </select>
+
+                {newStoreScope !== 'none' && (
+                  <div className="mt-3 space-y-2">
+                    {newStoreScope === 'category' && (
+                      <select
+                        value={newStoreCategory}
+                        onChange={(e) => setNewStoreCategory(e.target.value as 'all' | StoreCategory)}
+                        className="w-full px-3 py-2 text-sm border border-stone-300 rounded-xl bg-white"
+                      >
+                        <option value="all">选择品类</option>
+                        <option value="服装">服装</option>
+                        <option value="手机壳">手机壳</option>
+                        <option value="食品">食品</option>
+                      </select>
+                    )}
+
+                    {newStoreScope !== 'category' && (
+                      <>
+                        <input
+                          value={storeSearch}
+                          onChange={(e) => setStoreSearch(e.target.value)}
+                          placeholder="搜索店铺名称或编号"
+                          className="w-full px-3 py-2 text-sm border border-stone-300 rounded-xl bg-white"
+                        />
+                        <div className="max-h-36 overflow-y-auto space-y-1 bg-white rounded-xl border border-stone-200 p-2">
+                          {stores.filter((store) => `${store.store_name} ${store.store_code}`.toLowerCase().includes(storeSearch.toLowerCase())).map((store) => (
+                            <label key={store.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-50 text-sm">
+                              <input
+                                type={newStoreScope === 'single' ? 'radio' : 'checkbox'}
+                                name="task-store"
+                                checked={newStoreIds.includes(store.id)}
+                                onChange={() => setNewStoreIds((current) => newStoreScope === 'single' ? [store.id] : current.includes(store.id) ? current.filter((id) => id !== store.id) : [...current, store.id])}
+                              />
+                              <span>{store.store_name}</span>
+                              <span className="text-xs text-stone-400">{store.category} · {store.store_code}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    <div className="text-xs text-stone-600">
+                      {newStoreScope === 'category'
+                        ? (newStoreCategory === 'all' ? '请选择一个品类' : `将绑定 ${stores.filter((store) => store.category === newStoreCategory).length} 家启用店铺`)
+                        : `已选择 ${newStoreIds.length} 家店铺`}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
