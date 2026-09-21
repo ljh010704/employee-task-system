@@ -51,6 +51,7 @@ export default function StoresPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deletingStoreCode, setDeletingStoreCode] = useState<string | null>(null);
   const [form, setForm] = useState({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' as StoreCategory });
   const [masterCategoryFilter, setMasterCategoryFilter] = useState<'all' | StoreCategory>('all');
 
@@ -79,21 +80,26 @@ export default function StoresPage() {
     event.preventDefault();
     if (!form.store_code.trim() || !form.store_name.trim() || !form.browser_profile_id.trim() || saving) return;
     setSaving(true);
-    const { data: existingConfig, error: existingError } = await supabase.from('store_configs').select('id').eq('store_code', form.store_code.trim()).maybeSingle();
-    if (existingError) setError(existingError.message);
+    const { error: saveError } = await supabase.rpc('save_store_with_config', {
+      p_store_code: form.store_code.trim(),
+      p_store_name: form.store_name.trim(),
+      p_browser_profile_id: form.browser_profile_id.trim(),
+      p_category: form.category,
+    });
+    if (saveError) setError(saveError.message);
     else {
-      const configError = existingConfig
-        ? (await supabase.from('store_configs').update({ store_name: form.store_name.trim(), browser_profile_id: form.browser_profile_id.trim(), updated_at: new Date().toISOString() }).eq('id', existingConfig.id)).error
-        : (await supabase.from('store_configs').insert({ store_code: form.store_code.trim(), store_name: form.store_name.trim(), browser_profile_id: form.browser_profile_id.trim() })).error;
-      if (configError) setError(configError.message);
-      else {
-        const { error: masterError } = await supabase.from('stores').upsert({ store_code: form.store_code.trim(), store_name: form.store_name.trim(), category: form.category, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'store_code' });
-        if (masterError) setError(masterError.message);
-        setForm({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' });
-        await load();
-      }
+      setForm({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' });
+      await load();
     }
     setSaving(false);
+  };
+
+  const deleteStore = async (store: Store) => {
+    if (!confirm(`确定永久删除店铺“${store.store_name}”吗？\n\n采集到的商品、订单、售后和采集记录会一并删除；历史任务中的店铺名称快照会保留。`)) return;
+    setDeletingStoreCode(store.store_code);
+    const { error: deleteError } = await supabase.rpc('delete_store_with_config', { p_store_code: store.store_code });
+    if (deleteError) setError(deleteError.message); else await load();
+    setDeletingStoreCode(null);
   };
 
   const toggleMasterStore = async (store: MasterStore) => {
@@ -180,6 +186,7 @@ export default function StoresPage() {
                   <button type="button" onClick={() => void queueCommand(store.id, 'collect')} className="px-2.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold">立即采集</button>
                   <button type="button" onClick={() => void queueCommand(store.id, 'reauth')} className="px-2.5 py-1.5 rounded-lg border border-amber-300 text-amber-800 text-xs font-semibold">重新登录</button>
                   <button type="button" onClick={() => void toggleStore(store)} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-stone-700 text-xs font-semibold">{store.status === 'paused' ? '恢复采集' : '暂停采集'}</button>
+                  <button type="button" disabled={deletingStoreCode === store.store_code} onClick={() => void deleteStore(store)} className="px-2.5 py-1.5 rounded-lg border border-rose-300 text-rose-700 text-xs font-semibold disabled:opacity-50">{deletingStoreCode === store.store_code ? '删除中…' : '删除店铺'}</button>
                 </div>
                 {commands.filter((command) => command.store_id === store.id).map((command) => <div key={command.id} className="text-xs text-blue-700">当前命令：{command.command_type} · {command.status}</div>)}
               </article>;
