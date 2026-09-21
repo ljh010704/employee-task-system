@@ -79,17 +79,19 @@ export default function StoresPage() {
     event.preventDefault();
     if (!form.store_code.trim() || !form.store_name.trim() || !form.browser_profile_id.trim() || saving) return;
     setSaving(true);
-    const { error: insertError } = await supabase.from('store_configs').insert({
-      store_code: form.store_code.trim(),
-      store_name: form.store_name.trim(),
-      browser_profile_id: form.browser_profile_id.trim(),
-    });
-    if (insertError) setError(insertError.message);
+    const { data: existingConfig, error: existingError } = await supabase.from('store_configs').select('id').eq('store_code', form.store_code.trim()).maybeSingle();
+    if (existingError) setError(existingError.message);
     else {
-      const { error: masterError } = await supabase.from('stores').insert({ store_code: form.store_code.trim(), store_name: form.store_name.trim(), category: form.category });
-      if (masterError) setError(masterError.message);
-      setForm({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' });
-      await load();
+      const configError = existingConfig
+        ? (await supabase.from('store_configs').update({ store_name: form.store_name.trim(), browser_profile_id: form.browser_profile_id.trim(), updated_at: new Date().toISOString() }).eq('id', existingConfig.id)).error
+        : (await supabase.from('store_configs').insert({ store_code: form.store_code.trim(), store_name: form.store_name.trim(), browser_profile_id: form.browser_profile_id.trim() })).error;
+      if (configError) setError(configError.message);
+      else {
+        const { error: masterError } = await supabase.from('stores').upsert({ store_code: form.store_code.trim(), store_name: form.store_name.trim(), category: form.category, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'store_code' });
+        if (masterError) setError(masterError.message);
+        setForm({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' });
+        await load();
+      }
     }
     setSaving(false);
   };
