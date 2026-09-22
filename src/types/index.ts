@@ -1,7 +1,7 @@
 export type UserRole = 'admin' | 'employee';
 export type TaskStatus = 'todo' | 'in_progress' | 'review' | 'done';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
-export type StoreCategory = '服装' | '手机壳' | '食品';
+export type StoreCategory = '服装' | '手机壳' | '食品' | '未分组';
 export type StoreScopeType = 'none' | 'single' | 'multiple' | 'category';
 
 export interface Store {

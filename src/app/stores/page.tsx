@@ -29,6 +29,8 @@ type Run = {
 type Agent = { agent_id: string; agent_name: string; status: 'online' | 'offline'; last_heartbeat_at: string | null };
 type Command = { id: string; store_id: string; command_type: string; status: string; agent_id: string | null };
 type MasterStore = { id: string; store_code: string; store_name: string; category: StoreCategory; notes: string | null; enabled: boolean };
+type PlatformAccount = { id: string; account_code: string; account_name: string; browser_profile_id: string; status: 'setup_required' | 'discovering' | 'ready' | 'reauth_required' | 'failed'; last_discovered_at: string | null; last_error: string | null; enabled: boolean };
+type AccountStoreLink = { account_id: string; store_code_snapshot: string; store_name_snapshot: string; stores?: { category: StoreCategory }[] | null };
 
 const STATUS: Record<StoreStatus, { label: string; className: string }> = {
   setup_required: { label: '待首次登录', className: 'bg-slate-100 text-slate-700 border-slate-200' },
@@ -48,30 +50,57 @@ export default function StoresPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [commands, setCommands] = useState<Command[]>([]);
   const [masterStores, setMasterStores] = useState<MasterStore[]>([]);
+  const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
+  const [accountStoreLinks, setAccountStoreLinks] = useState<AccountStoreLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [deletingStoreCode, setDeletingStoreCode] = useState<string | null>(null);
+  const [accountSaving, setAccountSaving] = useState(false);
+  const [accountForm, setAccountForm] = useState({ account_code: '', account_name: '', browser_profile_id: '' });
   const [form, setForm] = useState({ store_code: '', store_name: '', browser_profile_id: '', category: '服装' as StoreCategory });
   const [masterCategoryFilter, setMasterCategoryFilter] = useState<'all' | StoreCategory>('all');
 
   const load = async () => {
     setLoading(true);
     setError('');
-    const [{ data: storeData, error: storeError }, { data: runData, error: runError }, { data: agentData, error: agentError }, { data: commandData, error: commandError }, { data: masterStoreData, error: masterStoreError }] = await Promise.all([
+    const [{ data: storeData, error: storeError }, { data: runData, error: runError }, { data: agentData, error: agentError }, { data: commandData, error: commandError }, { data: masterStoreData, error: masterStoreError }, { data: accountData, error: accountError }, { data: accountLinkData, error: accountLinkError }] = await Promise.all([
       supabase.from('store_configs').select('id,store_code,store_name,browser_profile_id,status,enabled,last_collected_at,last_success_at,last_error').order('store_code'),
       supabase.from('collection_runs').select('id,store_id,status,started_at,finished_at,counts,error').order('started_at', { ascending: false }).limit(30),
       supabase.from('collector_agents').select('agent_id,agent_name,status,last_heartbeat_at').order('last_heartbeat_at', { ascending: false }),
-      supabase.from('collector_commands').select('id,store_id,command_type,status,agent_id').in('status', ['pending', 'running']).order('requested_at', { ascending: false }),
+      supabase.from('collector_commands').select('id,store_id,account_id,command_type,status,agent_id').in('status', ['pending', 'running']).order('requested_at', { ascending: false }),
       supabase.from('stores').select('id,store_code,store_name,category,notes,enabled').order('category').order('store_name'),
+      supabase.from('platform_accounts').select('id,account_code,account_name,browser_profile_id,status,last_discovered_at,last_error,enabled').order('account_name'),
+      supabase.from('platform_account_stores').select('account_id,store_code_snapshot,store_name_snapshot,stores(category)').order('store_name_snapshot'),
     ]);
-    if (storeError || runError || agentError || commandError || masterStoreError) setError(storeError?.message || runError?.message || agentError?.message || commandError?.message || masterStoreError?.message || '店铺数据加载失败');
+    if (storeError || runError || agentError || commandError || masterStoreError || accountError || accountLinkError) setError(storeError?.message || runError?.message || agentError?.message || commandError?.message || masterStoreError?.message || accountError?.message || accountLinkError?.message || '店铺数据加载失败');
     setStores((storeData || []) as Store[]);
     setRuns((runData || []) as Run[]);
     setAgents((agentData || []) as Agent[]);
     setCommands((commandData || []) as Command[]);
     setMasterStores((masterStoreData || []) as MasterStore[]);
+    setAccounts((accountData || []) as PlatformAccount[]);
+    setAccountStoreLinks((accountLinkData || []) as AccountStoreLink[]);
     setLoading(false);
+  };
+
+  const saveAccount = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!accountForm.account_code.trim() || !accountForm.account_name.trim() || !accountForm.browser_profile_id.trim() || accountSaving) return;
+    setAccountSaving(true);
+    const { error: saveError } = await supabase.rpc('save_platform_account', {
+      p_account_code: accountForm.account_code.trim(),
+      p_account_name: accountForm.account_name.trim(),
+      p_browser_profile_id: accountForm.browser_profile_id.trim(),
+    });
+    if (saveError) setError(saveError.message);
+    else { setAccountForm({ account_code: '', account_name: '', browser_profile_id: '' }); await load(); }
+    setAccountSaving(false);
+  };
+
+  const discoverAccount = async (account: PlatformAccount) => {
+    const { error: queueError } = await supabase.rpc('queue_platform_account_discovery', { p_account_id: account.id });
+    if (queueError) setError(queueError.message); else await load();
   };
 
   useEffect(() => { void load(); }, []);
@@ -139,12 +168,36 @@ export default function StoresPage() {
         {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
 
         <section className="bg-white rounded-2xl border border-stone-200 p-5">
-          <h2 className="font-bold text-stone-900">添加店铺配置</h2>
+          <h2 className="font-bold text-stone-900">平台账号登录与店铺识别</h2>
+          <p className="text-xs text-stone-500 mt-1">保存账号标识和本地浏览器配置，不保存抖音密码。点击识别后，采集代理会打开抖店；首次登录或验证码由你在浏览器中完成。</p>
+          <form onSubmit={saveAccount} className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+            <input value={accountForm.account_code} onChange={(e) => setAccountForm({ ...accountForm, account_code: e.target.value })} placeholder="账号编号，如 douyin-main" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
+            <input value={accountForm.account_name} onChange={(e) => setAccountForm({ ...accountForm, account_name: e.target.value })} placeholder="账号名称或备注" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
+            <input value={accountForm.browser_profile_id} onChange={(e) => setAccountForm({ ...accountForm, browser_profile_id: e.target.value })} placeholder="本地浏览器配置标识" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
+            <button disabled={accountSaving} className="px-4 py-2.5 rounded-xl bg-stone-900 text-white text-sm font-semibold disabled:opacity-50">{accountSaving ? '保存中…' : '保存平台账号'}</button>
+          </form>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+            {accounts.map((account) => {
+              const links = accountStoreLinks.filter((link) => link.account_id === account.id);
+              return <article key={account.id} className="rounded-xl border border-stone-200 p-4">
+                <div className="flex items-start justify-between gap-3"><div><div className="font-semibold text-stone-900">{account.account_name}</div><div className="text-xs text-stone-500 mt-1">{account.account_code} · profile: {account.browser_profile_id}</div></div><span className="text-xs px-2 py-1 rounded-lg bg-stone-100 text-stone-700">{account.status}</span></div>
+                <div className="text-sm text-stone-600 mt-3">已识别 {links.length} 家店铺{account.last_discovered_at ? ` · ${formatDate(account.last_discovered_at)}` : ''}</div>
+                {links.length > 0 && <div className="text-xs text-stone-500 mt-2">{links.map((link) => link.store_name_snapshot).join('、')}</div>}
+                {account.last_error && <div className="text-xs text-rose-700 bg-rose-50 rounded-lg p-2 mt-2">{account.last_error}</div>}
+                <button type="button" disabled={account.status === 'discovering'} onClick={() => void discoverAccount(account)} className="mt-3 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold disabled:opacity-50">{account.status === 'discovering' ? '识别中…' : '登录并识别店铺'}</button>
+              </article>;
+            })}
+            {!accounts.length && <div className="text-sm text-stone-500">暂无平台账号，请先保存一个账号配置。</div>}
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl border border-stone-200 p-5">
+          <h2 className="font-bold text-stone-900">手工添加店铺配置（备用）</h2>
           <form onSubmit={createStore} className="grid grid-cols-1 md:grid-cols-5 gap-3 mt-4">
             <input value={form.store_code} onChange={(e) => setForm({ ...form, store_code: e.target.value })} placeholder="店铺编号，如 store-001" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
             <input value={form.store_name} onChange={(e) => setForm({ ...form, store_name: e.target.value })} placeholder="店铺名称" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
             <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value as StoreCategory })} className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm bg-white">
-              <option value="服装">服装</option><option value="手机壳">手机壳</option><option value="食品">食品</option>
+              <option value="未分组">未分组</option><option value="服装">服装</option><option value="手机壳">手机壳</option><option value="食品">食品</option>
             </select>
             <input value={form.browser_profile_id} onChange={(e) => setForm({ ...form, browser_profile_id: e.target.value })} placeholder="本地浏览器配置标识" className="px-3 py-2.5 rounded-xl border border-stone-300 text-sm" />
             <button disabled={saving} className="px-4 py-2.5 rounded-xl bg-stone-900 text-white text-sm font-semibold disabled:opacity-50">{saving ? '保存中…' : '保存店铺'}</button>

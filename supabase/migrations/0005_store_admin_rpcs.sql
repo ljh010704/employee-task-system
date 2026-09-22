@@ -16,7 +16,7 @@ begin
   if nullif(trim(p_store_code), '') is null then raise exception 'Store code is required'; end if;
   if nullif(trim(p_store_name), '') is null then raise exception 'Store name is required'; end if;
   if nullif(trim(p_browser_profile_id), '') is null then raise exception 'Browser profile is required'; end if;
-  if p_category not in ('服装', '手机壳', '食品') then raise exception 'Invalid store category'; end if;
+  if p_category not in ('服装', '手机壳', '食品', '未分组') then raise exception 'Invalid store category'; end if;
 
   insert into public.store_configs (store_code, store_name, browser_profile_id)
   values (trim(p_store_code), trim(p_store_name), trim(p_browser_profile_id))

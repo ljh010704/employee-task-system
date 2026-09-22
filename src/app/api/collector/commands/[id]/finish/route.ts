@@ -11,13 +11,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!body.status || !['success', 'failed', 'reauth_required'].includes(body.status)) return NextResponse.json({ error: 'Invalid command status' }, { status: 400 });
   try {
     const client = getCollectorAdmin();
-    const { data: command, error: findError } = await client.from('collector_commands').select('id,store_id,command_type').eq('id', id).maybeSingle();
+    const { data: command, error: findError } = await client.from('collector_commands').select('id,store_id,account_id,command_type').eq('id', id).maybeSingle();
     if (findError) return NextResponse.json({ error: findError.message }, { status: 500 });
     if (!command) return NextResponse.json({ error: 'Command not found' }, { status: 404 });
     const finishedAt = new Date().toISOString();
     const { error } = await client.from('collector_commands').update({ status: body.status, finished_at: finishedAt, error: body.error || null, result: body.result || {} }).eq('id', id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    if (body.status === 'reauth_required') {
+    if (command.account_id) {
+      await client.from('platform_accounts').update({ status: body.status === 'reauth_required' ? 'reauth_required' : body.status === 'success' ? 'ready' : 'failed', last_error: body.error || null, updated_at: finishedAt }).eq('id', command.account_id);
+    } else if (body.status === 'reauth_required') {
       await client.from('store_configs').update({ status: 'reauth_required', last_error: body.error || 'Browser session requires login', updated_at: finishedAt }).eq('id', command.store_id);
     } else if (body.status === 'success') {
       await client.from('store_configs').update({ status: 'normal', last_success_at: finishedAt, last_error: null, updated_at: finishedAt }).eq('id', command.store_id);

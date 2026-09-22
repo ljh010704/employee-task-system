@@ -58,6 +58,10 @@ async function openStore(store) {
   return { context, page, adapter: new DouyinAdapter(page) };
 }
 
+async function openAccount(account) {
+  return openStore({ browser_profile_id: account.browser_profile_id });
+}
+
 async function finish(commandId, status, result = {}, error = null) {
   return api(`/api/collector/commands/${commandId}/finish`, { method: 'POST', body: JSON.stringify({ status, result, error }) });
 }
@@ -65,20 +69,32 @@ async function finish(commandId, status, result = {}, error = null) {
 async function runCommand(command) {
   await api(`/api/collector/commands/${command.id}/start`, { method: 'POST' });
   const store = command.store_configs;
-  if (!store?.store_code || !store.browser_profile_id) throw new Error('Command did not include store browser profile metadata');
+  const account = command.platform_accounts;
+  if (command.command_type === 'discover_stores' && (!account?.account_code || !account.browser_profile_id)) {
+    throw new Error('Command did not include platform account browser profile metadata');
+  }
+  if (command.command_type !== 'discover_stores' && (!store?.store_code || !store.browser_profile_id)) {
+    throw new Error('Command did not include store browser profile metadata');
+  }
   let context;
   try {
-    const opened = await openStore(store);
+    const opened = command.command_type === 'discover_stores' ? await openAccount(account) : await openStore(store);
     context = opened.context;
-    if (command.command_type === 'login' || command.command_type === 'reauth') {
+    if (command.command_type === 'login' || command.command_type === 'reauth' || command.command_type === 'discover_stores') {
       await opened.adapter.openHome();
-      console.log(`[${store.store_code}] browser opened; complete login manually.`);
+      console.log(`[${account?.account_code || store.store_code}] browser opened; complete login manually if needed.`);
       const deadline = Date.now() + Number(process.env.COLLECTOR_LOGIN_WAIT_MS || 300000);
       while (Date.now() < deadline && !opened.page.url().includes('/ffa/mshop/homepage')) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
       await opened.adapter.assertLoggedIn();
-      await finish(command.id, 'success', { store_code: store.store_code, action: command.command_type });
+      if (command.command_type === 'discover_stores') {
+        const stores = await opened.adapter.discoverStores();
+        await api('/api/collector/discover-stores', { method: 'POST', body: JSON.stringify({ account_id: account.id, stores }) });
+        await finish(command.id, 'success', { account_code: account.account_code, stores: stores.length });
+      } else {
+        await finish(command.id, 'success', { store_code: store.store_code, action: command.command_type });
+      }
     } else if (command.command_type === 'collect') {
       await opened.adapter.assertLoggedIn();
       const result = await opened.adapter.collect();
